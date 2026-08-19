@@ -42,19 +42,26 @@ class WorkWindow:
 
 @dataclass
 class Calendar:
-    """A working-time calendar. Holidays are full non-working days."""
+    """A working-time calendar. Exceptions override the weekday pattern per
+    date: a date mapping to a non-empty window list is a working day,
+    a date mapping to None/empty is a non-working day."""
 
     cal_id: str
     name: str
     day_hours: float = 8.0
-    work_windows: Dict[int, List[WorkWindow]] = field(default_factory=dict)  # weekday 1=Sun..7=Sat
-    holidays: set = field(default_factory=set)  # datetime.date
+    work_windows: Dict[int, List[WorkWindow]] = field(default_factory=dict)  # weekday 1=Mon..7=Sun
+    exceptions: Dict = field(default_factory=dict)  # date -> Optional[List[WorkWindow]]
     base_cal_id: Optional[str] = None
     project_override: bool = False
 
+    def windows_for(self, day: datetime) -> List[WorkWindow]:
+        if day.date() in self.exceptions:
+            return self.exceptions[day.date()] or []
+        return self.work_windows.get(day.isoweekday(), [])
+
     def is_workday(self, day: datetime) -> bool:
-        if day.date() in self.holidays:
-            return False
+        if day.date() in self.exceptions:
+            return bool(self.exceptions[day.date()])
         windows = self.work_windows.get(day.isoweekday())
         if not windows:
             return False
@@ -62,8 +69,11 @@ class Calendar:
 
     def work_hours_on(self, day: datetime) -> float:
         """Total working hours on a given day (holidays = 0)."""
-        if day.date() in self.holidays:
-            return 0.0
+        if day.date() in self.exceptions:
+            if not self.exceptions[day.date()]:
+                return 0.0
+            return sum((w.end.hour - w.start.hour) + (w.end.minute - w.start.minute) / 60.0
+                       for w in self.exceptions[day.date()])
         windows = self.work_windows.get(day.isoweekday(), [])
         return sum((w.end.hour - w.start.hour) + (w.end.minute - w.start.minute) / 60.0 for w in windows)
 

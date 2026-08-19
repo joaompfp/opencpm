@@ -30,7 +30,7 @@ def make_cal():
     windows = {}
     for iso in range(1, 6):  # Mon-Fri
         windows[iso] = [WorkWindow(time(8, 0), time(12, 0)), WorkWindow(time(13, 0), time(17, 0))]
-    return Calendar(cal_id="c1", name="5d", day_hours=8.0, work_windows=windows, holidays=set())
+    return Calendar(cal_id="c1", name="5d", day_hours=8.0, work_windows=windows, exceptions={})
 
 
 def build_sched():

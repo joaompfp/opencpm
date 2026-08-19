@@ -34,8 +34,10 @@ STATUS_MAP = {
 }
 
 DAY_ORDER = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
-# isoweekday: 1=Mon..7=Sun. PyP6XER dict keys: '1'=Sunday...'7'=Saturday
-PYP6_DAY_INDEX = {"1": 7, "2": 1, "3": 2, "4": 3, "5": 4, "6": 5, "7": 6}
+# iso weekday: 1=Mon..7=Sun. Convert DAY_ORDER index (0=Sun..6=Sat) -> iso.
+def _iso_weekday(dow_name: str) -> int:
+    idx = DAY_ORDER.index(dow_name)
+    return (idx + 6) % 7 + 1
 
 
 def _to_dt(v) -> Optional[datetime]:
@@ -56,14 +58,28 @@ def _to_dt(v) -> Optional[datetime]:
 
 
 def _build_calendar(cal_obj) -> Calendar:
-    holidays = set()
-    for exc in (cal_obj.exceptions or []):
-        if isinstance(exc, datetime):
-            holidays.add(exc.date())
+    exceptions: dict = {}
+    # P6 stores per-day overrides in clndr_data: (0||N(d|serial)(windows))
+    # A day with windows is a WORKING exception; a day without windows is
+    # a NON-WORKING exception (holiday). The `exceptions` attr only lists
+    # dates, losing that distinction — so parse the blob.
+    blob = getattr(cal_obj, "clndr_data", "") or ""
+    import re as _re
+    from datetime import timedelta as _td
+    _EPOCH = datetime(1899, 12, 30)
+    for _serial, _body in _re.findall(r"\(0\|\|\d+\(d\|(\d+)\)\((.*?)\)\)", blob):
+        _dt = _EPOCH + _td(days=int(_serial))
+        wins = []
+        for _st, _fn in _re.findall(r"s\|(\d+:\d+)\|f\|(\d+:\d+)", _body):
+            _sh, _sm = map(int, _st.split(":"))
+            _fh, _fm = map(int, _fn.split(":"))
+            wins.append(WorkWindow(time(_sh, _sm), time(_fh, _fm)))
+        exceptions[_dt.date()] = wins or None
+
     windows: dict = {}
     for entry in (cal_obj.working_hours or []):
         dow_name = entry.get("DayOfWeek")
-        iso = DAY_ORDER.index(dow_name) + 1  # 1=Mon..7=Sun
+        iso = _iso_weekday(dow_name)
         wt = []
         for w in (entry.get("WorkTimes") or []):
             st = w.get("Start")
@@ -77,7 +93,7 @@ def _build_calendar(cal_obj) -> Calendar:
         name=cal_obj.clndr_name,
         day_hours=float(cal_obj.day_hr_cnt or 8.0),
         work_windows=windows,
-        holidays=holidays,
+        exceptions=exceptions,
         base_cal_id=str(cal_obj.base_clndr_id) if cal_obj.base_clndr_id else None,
         project_override=(cal_obj.clndr_type == "CA_Project"),
     )

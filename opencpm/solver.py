@@ -25,6 +25,37 @@ class CalendarTime:
     def __init__(self, cal: Calendar):
         self.cal = cal
 
+    def next_working_instant(self, dt: datetime) -> datetime:
+        """First working instant >= dt (window start, or dt itself if inside a window)."""
+        day = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        while True:
+            if self.cal.is_workday(day):
+                for w in self.cal.windows_for(day):
+                    ws = day.replace(hour=w.start.hour, minute=w.start.minute)
+                    we = day.replace(hour=w.end.hour, minute=w.end.minute)
+                    if we <= dt:
+                        continue
+                    cand = max(ws, dt)
+                    if cand < we:
+                        return cand
+            day += timedelta(days=1)
+
+    def prev_working_instant(self, dt: datetime) -> datetime:
+        """Last working instant <= dt (window end, or dt itself if inside a window)."""
+        day = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        while True:
+            if self.cal.is_workday(day):
+                for w in sorted(self.cal.windows_for(day),
+                                key=lambda x: (x.end.hour, x.end.minute), reverse=True):
+                    ws = day.replace(hour=w.start.hour, minute=w.start.minute)
+                    we = day.replace(hour=w.end.hour, minute=w.end.minute)
+                    if ws >= dt:
+                        continue
+                    cand = min(we, dt)
+                    if cand > ws:
+                        return cand
+            day -= timedelta(days=1)
+
     def add_hours(self, dt: datetime, hours: float) -> datetime:
         """Advance dt by `hours` of calendar working time.
 
@@ -36,49 +67,35 @@ class CalendarTime:
         if hours < 0:
             # Negative lag / FF-SF duration offset: walk backward instead
             return self.subtract_hours(dt, -hours)
+        if hours == 0:
+            return dt
         remaining = hours
         current = dt
 
         # Locate first working instant >= current
-        day = current.replace(hour=0, minute=0, second=0, microsecond=0)
-        anchor = None
-        while anchor is None:
-            if self.cal.is_workday(day):
-                for w in self.cal.work_windows.get(day.isoweekday(), []):
-                    ws = day.replace(hour=w.start.hour, minute=w.start.minute)
-                    we = day.replace(hour=w.end.hour, minute=w.end.minute)
-                    if we <= current:
-                        continue
-                    cand = max(ws, current)
-                    if cand < we:
-                        anchor = cand
-                        break
-            if anchor is not None:
-                break
-            day += timedelta(days=1)
+        anchor = self.next_working_instant(current)
 
-        # Consume from anchor forward
-        if remaining <= 0:
-            return anchor
+        # Consume from anchor forward, full windows per day
+        day = anchor.replace(hour=0, minute=0, second=0, microsecond=0)
         while remaining > 0:
             if self.cal.is_workday(day):
-                for w in self.cal.work_windows.get(day.isoweekday(), []):
+                for w in self.cal.windows_for(day):
                     ws = day.replace(hour=w.start.hour, minute=w.start.minute)
                     we = day.replace(hour=w.end.hour, minute=w.end.minute)
                     day_len = (we - ws).total_seconds() / 3600.0
                     if day_len <= 0:
                         continue
                     # Only consume windows at/after anchor
-                    if anchor is not None and we <= anchor:
+                    if we <= anchor:
                         continue
-                    eff_start = max(ws, anchor) if anchor is not None else ws
+                    eff_start = max(ws, anchor)
                     if eff_start >= we:
                         continue
                     available = (we - eff_start).total_seconds() / 3600.0
                     if remaining <= available:
                         return eff_start + timedelta(hours=remaining)
                     remaining -= available
-            anchor = None  # after first day, full windows only
+            # After the anchor's day, all remaining windows are beyond it
             day += timedelta(days=1)
         return day  # unreachable
 
@@ -95,46 +112,30 @@ class CalendarTime:
         current = dt
 
         # Locate last working instant <= current
-        day = current.replace(hour=0, minute=0, second=0, microsecond=0)
-        anchor = None
-        while anchor is None:
-            if self.cal.is_workday(day):
-                for w in sorted(self.cal.work_windows.get(day.isoweekday(), []),
-                                key=lambda x: (x.end.hour, x.end.minute), reverse=True):
-                    ws = day.replace(hour=w.start.hour, minute=w.start.minute)
-                    we = day.replace(hour=w.end.hour, minute=w.end.minute)
-                    if ws >= current:
-                        continue
-                    cand = min(we, current)
-                    if cand > ws:
-                        anchor = cand
-                        break
-            if anchor is not None:
-                break
-            day -= timedelta(days=1)
+        anchor = self.prev_working_instant(current)
 
         if remaining <= 0:
             return anchor
 
+        day = anchor.replace(hour=0, minute=0, second=0, microsecond=0)
         while remaining > 0:
             if self.cal.is_workday(day):
-                for w in sorted(self.cal.work_windows.get(day.isoweekday(), []),
+                for w in sorted(self.cal.windows_for(day),
                                 key=lambda x: (x.end.hour, x.end.minute), reverse=True):
                     ws = day.replace(hour=w.start.hour, minute=w.start.minute)
                     we = day.replace(hour=w.end.hour, minute=w.end.minute)
                     day_len = (we - ws).total_seconds() / 3600.0
                     if day_len <= 0:
                         continue
-                    if anchor is not None and ws >= anchor:
+                    if ws >= anchor:
                         continue
-                    eff_end = min(we, anchor) if anchor is not None else we
+                    eff_end = min(we, anchor)
                     if eff_end <= ws:
                         continue
                     available = (eff_end - ws).total_seconds() / 3600.0
                     if remaining <= available:
                         return eff_end - timedelta(hours=remaining)
                     remaining -= available
-            anchor = None
             day -= timedelta(days=1)
         return day  # unreachable
 
@@ -189,20 +190,31 @@ class Solver:
         raise ValueError(f"Unknown relationship type {rtype}")
 
     def _constraint_late_finish(self, act: Activity, succ: Activity, rtype: RelType, lag_hours: float) -> datetime:
-        """Latest finish of `act` given one successor relationship."""
+        """Latest finish of `act` given one successor relationship.
+
+        Backward-pass algebra (calendar-aware, NOT simple hour algebra):
+        - FS: succ.ES >= act.EF + lag  ->  act.LF = succ.LS - lag
+        - SS: succ.ES >= act.ES + lag  ->  act.LS = succ.LS - lag
+              then act.LF = act.LS + dur  (two separate calendar moves)
+        - FF: succ.EF >= act.EF + lag  ->  act.LF = succ.LF - lag
+        - SF: succ.LF >= act.LS + lag  ->  act.LS = succ.LF - lag
+              then act.LF = act.LS + dur
+        """
         cal = self.cal_time_for(act)
         if rtype == RelType.FS:
             assert succ.late_start is not None
             return cal.subtract_hours(succ.late_start, lag_hours)
         if rtype == RelType.SS:
             assert succ.late_start is not None
-            return cal.subtract_hours(succ.late_start, lag_hours)
+            act_ls = cal.subtract_hours(succ.late_start, lag_hours)
+            return cal.add_hours(act_ls, act.effective_duration)
         if rtype == RelType.FF:
             assert succ.late_finish is not None
             return cal.subtract_hours(succ.late_finish, lag_hours)
         if rtype == RelType.SF:
             assert succ.late_finish is not None
-            return cal.subtract_hours(succ.late_finish, lag_hours + act.effective_duration)
+            act_ls = cal.subtract_hours(succ.late_finish, lag_hours)
+            return cal.add_hours(act_ls, act.effective_duration)
         raise ValueError(f"Unknown relationship type {rtype}")
 
     # -------------------------------------------------------------------------
@@ -248,12 +260,12 @@ class Solver:
         for tid in order:
             act = sched.activities[tid]
             if act.status == Status.COMPLETE:
-                # P6 progressed schedules: completed activities carry
-                # ES=EE=data date in the XER; downstream logic anchors on
-                # that. Pin to the reference dates so successors see the
-                # same floor P6 used.
-                act.early_start = act.ref_early_start
-                act.early_finish = act.ref_early_finish
+                # Completed: use ACTUAL dates as the anchor for successors
+                # (P6's XER shows ES/EF=data date for completed activities,
+                # but successor lags compute from the real finish; the
+                # data-date floor below catches everything earlier).
+                act.early_start = act.actual_start
+                act.early_finish = act.actual_end or act.actual_start
                 continue
             if act.is_milestone or act.effective_duration == 0:
                 dur = 0.0
@@ -293,8 +305,11 @@ class Solver:
             # P6 floor: no remaining work starts before the data date.
             if sched.data_date is not None and es < sched.data_date:
                 es = sched.data_date
-            # Snap ES into a valid working instant (never exactly at window end)
-            es = cal.add_hours(es, 0)
+            # Snap only positive-duration activities to a valid working start.
+            # Zero-duration milestones may sit exactly on a window end (P6 does
+            # this for CS_MEO and FF-linked milestones).
+            if dur > 0:
+                es = cal.next_working_instant(es)
             act.early_start = es
             act.early_finish = cal.add_hours(es, dur)
 
@@ -376,7 +391,8 @@ class Solver:
                 es = max(es, act.constraint_date)
             if sched.data_date is not None and es < sched.data_date:
                 es = sched.data_date
-            es = cal.add_hours(es, 0)
+            if dur > 0:
+                es = cal.next_working_instant(es)
             act.early_start = es
             act.early_finish = cal.add_hours(es, dur)
 
