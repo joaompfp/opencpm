@@ -16,7 +16,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
-from .model import Activity, Calendar, RelType, Schedule, Status
+from .model import Activity, Calendar, RelType, Schedule, Status, TaskType
 
 
 class CalendarTime:
@@ -305,10 +305,12 @@ class Solver:
             # P6 floor: no remaining work starts before the data date.
             if sched.data_date is not None and es < sched.data_date:
                 es = sched.data_date
-            # Snap only positive-duration activities to a valid working start.
-            # Zero-duration milestones may sit exactly on a window end (P6 does
-            # this for CS_MEO and FF-linked milestones).
-            if dur > 0:
+            # Snap ES into a valid working start. P6 snaps:
+            # - positive-duration activities (always)
+            # - zero-duration TASKS (TT_Task) — they behave like work
+            # but NOT milestones (TT_Mile/TT_FinMile) which may sit exactly
+            # on a window end (CS_MEO and FF-linked milestones).
+            if dur > 0 or act.task_type == TaskType.TASK:
                 es = cal.next_working_instant(es)
             act.early_start = es
             act.early_finish = cal.add_hours(es, dur)
@@ -340,9 +342,27 @@ class Solver:
                         lf = cand
                 if lf is None:
                     lf = end
+            # Hard constraints that affect LATE dates, applied INLINE so
+            # predecessors see the pinned value (Oracle constraint docs):
+            # - CS_MEO (Finish On): late finish = constraint date exactly
+            # - CS_MSOB (Finish On or Before): late finish <= constraint date
+            # - CS_MSO (Start On): late start = constraint date -> LF = date + dur
+            cstr = act.constraint_type
+            if cstr == "CS_MEO" and act.constraint_date is not None:
+                lf = act.constraint_date
+            elif cstr == "CS_FOB" and act.constraint_date is not None:
+                lf = min(lf, act.constraint_date)
+            elif cstr == "CS_MSO" and act.constraint_date is not None:
+                cand = cal.add_hours(act.constraint_date, act.effective_duration)
+                lf = min(lf, cand)
             act.late_finish = lf
             dur = 0.0 if act.is_milestone else act.effective_duration
-            act.late_start = cal.subtract_hours(lf, dur)
+            if dur <= 0:
+                # Zero-duration: LS == LF exactly (P6: milestone late dates
+                # are identical, no snap-back to previous window).
+                act.late_start = lf
+            else:
+                act.late_start = cal.subtract_hours(lf, dur)
 
         # -- Float ------------------------------------------------------------
         for act in sched.activities.values():
@@ -355,6 +375,47 @@ class Solver:
                 act.total_float_hours = 0.0
             else:
                 act.total_float_hours = self.cal_time_for(act).working_hours_between(es, ls)
+
+        # -- ALAP constraints ---------------------------------------------------
+        # CS_ALAP: "sets the activity's early dates as late as possible without
+        # affecting successor activities" (Oracle docs). Only applies to
+        # activities with POSITIVE float. ES is bounded by the successors'
+        # EARLY dates (not by LS): the largest ES that keeps every successor's
+        # early start/finish unchanged. Zero-duration and completed activities
+        # are skipped.
+        for act in sched.activities.values():
+            if act.constraint_type != "CS_ALAP":
+                continue
+            if act.early_start is None or act.early_finish is None:
+                continue
+            if act.total_float_hours is not None and act.total_float_hours <= 0:
+                continue  # only positive-float activities
+            dur = 0.0 if act.is_milestone else act.effective_duration
+            cal = self.cal_time_for(act)
+            bound = None
+            for sid, rtype, lag in sched.successors(act.task_id):
+                s = sched.activities.get(sid)
+                if s is None or s.early_start is None:
+                    continue
+                assert s.early_finish is not None
+                if rtype == RelType.FS:
+                    # succ.ES >= act.EF + lag  ->  act.ES <= succ.ES - dur - lag
+                    cand = cal.subtract_hours(s.early_start, dur + lag)
+                elif rtype == RelType.SS:
+                    cand = cal.subtract_hours(s.early_start, lag)
+                elif rtype == RelType.FF:
+                    # succ.EF >= act.EF + lag -> act.ES <= succ.EF - dur - lag
+                    cand = cal.subtract_hours(s.early_finish, dur + lag)
+                elif rtype == RelType.SF:
+                    # succ.EF >= act.ES + lag
+                    cand = cal.subtract_hours(s.early_finish, lag)
+                else:
+                    continue
+                if bound is None or cand < bound:
+                    bound = cand
+            if bound is not None and bound > act.early_start:
+                act.early_start = bound
+                act.early_finish = cal.add_hours(bound, dur)
 
         return sched
 
