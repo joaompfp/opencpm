@@ -260,10 +260,10 @@ class Solver:
         for tid in order:
             act = sched.activities[tid]
             if act.status == Status.COMPLETE:
-                # Completed: use ACTUAL dates as the anchor for successors
-                # (P6's XER shows ES/EF=data date for completed activities,
-                # but successor lags compute from the real finish; the
-                # data-date floor below catches everything earlier).
+                # Completed activities anchor successors at their ACTUAL
+                # dates (P6 recomputes from actuals when progressing; the
+                # stored ES/EF in the XER for completed rows is a stamped
+                # data-date artifact that does not reproduce the chains).
                 act.early_start = act.actual_start
                 act.early_finish = act.actual_end or act.actual_start
                 continue
@@ -321,6 +321,29 @@ class Solver:
             (a.early_finish for a in sched.activities.values() if a.early_finish),
             default=start_date,
         )
+
+        # -- Project finish constraint -----------------------------------------
+        # P6 with "use project finish date for float" (SCHEDOPTIONS
+        # sched_use_project_end_date_for_float=Y) treats the scheduled end
+        # date as a hard finish anchor: the terminal activity of the network
+        # is pinned to scd_end_date. Without this, a network whose natural
+        # finish lands before the project end date shows the wrong terminal
+        # date (Draft 21: network ends 10-12 08:36, P6 pins Milestone 20 at
+        # scd_end 10-13 08:00).
+        if sched.project_end is not None:
+            # Find the terminal activity with the latest early finish (the
+            # network's end node) and pin it to the project end date.
+            terminals = [
+                a for a in sched.activities.values()
+                if a.early_finish is not None and not sched.successors(a.task_id)
+            ]
+            if terminals:
+                end_node = max(terminals, key=lambda a: a.early_finish or datetime.min)
+                assert end_node.early_finish is not None
+                if end_node.early_finish < sched.project_end:
+                    cal = self.cal_time_for(end_node)
+                    end_node.early_start = sched.project_end
+                    end_node.early_finish = cal.add_hours(sched.project_end, 0)  # zero-duration pin
 
         # -- Backward pass ----------------------------------------------------
         for tid in reversed(order):
