@@ -394,8 +394,10 @@ class Solver:
             succs = sched.successors(tid)
             if not succs:
                 lf = end
+                lf_driver = None
             else:
                 lf = None
+                lf_driver = None
                 for succ_id, rtype, lag in succs:
                     s = sched.activities[succ_id]
                     if s.early_start is None:
@@ -403,8 +405,10 @@ class Solver:
                     cand = self._constraint_late_finish(act, s, rtype, lag)
                     if lf is None or cand < lf:
                         lf = cand
+                        lf_driver = rtype
                 if lf is None:
                     lf = end
+                    lf_driver = None
             # Hard constraints that affect LATE dates, applied INLINE so
             # predecessors see the pinned value (Oracle constraint docs):
             # - CS_MEO (Finish On): late finish = constraint date exactly
@@ -426,12 +430,12 @@ class Solver:
                 # timestamps (08:36) are KEPT for zero-duration rows.
                 act.late_start = lf
             else:
-                # Positive duration: P6 snaps relationship-derived late dates
-                # to calendar window edges (413/422 rows at minute :00 in
-                # Draft 21; LF at 16:00, LS at 08:00). Constraint timestamps
-                # do NOT propagate into positive-duration late dates, except
-                # when a hard constraint (CS_MEO) pins LF exactly.
-                if cstr != "CS_MEO":
+                # Positive duration: P6 snaps FS/SS-driven late dates to
+                # calendar window edges (Draft 21: 413/422 rows at minute :00,
+                # LF at 16:00, LS at 08:00). FF/SF-driven late dates keep the
+                # raw constraint timestamp (A3920: subtract_hours(07-14 08:36,
+                # 320h) = 05-19 08:36 = P6 exactly).
+                if lf_driver in (RelType.FS, RelType.SS) and cstr != "CS_MEO":
                     lf = cal.snap_to_window_end(lf)
                     act.late_finish = lf
                 act.late_start = cal.subtract_hours(lf, dur)
