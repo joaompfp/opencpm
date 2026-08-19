@@ -77,7 +77,21 @@ def _build_calendar(cal_obj) -> Calendar:
         exceptions[_dt.date()] = wins or None
 
     windows: dict = {}
-    for entry in (cal_obj.working_hours or []):
+    wh = getattr(cal_obj, "working_hours", None)
+    if wh is None:
+        # Resource calendars (CA_Rsrc) have working_days but no
+        # working_hours attribute. They don't drive activity dates —
+        # skip building windows for them.
+        return Calendar(
+            cal_id=str(cal_obj.clndr_id),
+            name=getattr(cal_obj, "clndr_name", "") or "",
+            day_hours=float(getattr(cal_obj, "day_hr_cnt", None) or 8.0),
+            work_windows=windows,
+            exceptions=exceptions,
+            base_cal_id=str(cal_obj.base_clndr_id) if getattr(cal_obj, "base_clndr_id", None) else None,
+            project_override=(getattr(cal_obj, "clndr_type", "") == "CA_Project"),
+        )
+    for entry in (wh or []):
         dow_name = entry.get("DayOfWeek")
         iso = _iso_weekday(dow_name)
         wt = []
@@ -132,6 +146,7 @@ def load_xer(path: str) -> Schedule:
             ref_late_start=_to_dt(t.late_start_date),
             ref_late_finish=_to_dt(t.late_end_date),
             ref_total_float=float(t.total_float_hr_cnt) if t.total_float_hr_cnt is not None else None,
+            ref_free_float=float(t.free_float_hr_cnt) if t.free_float_hr_cnt is not None else None,
         )
         sched.activities[str(t.task_id)] = act
 

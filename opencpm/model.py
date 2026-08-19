@@ -106,6 +106,7 @@ class Activity:
     late_start: Optional[datetime] = None
     late_finish: Optional[datetime] = None
     total_float_hours: Optional[float] = None
+    free_float_hours: Optional[float] = None
 
     # Reference values from source schedule (P6) for validation
     ref_early_start: Optional[datetime] = None
@@ -113,6 +114,7 @@ class Activity:
     ref_late_start: Optional[datetime] = None
     ref_late_finish: Optional[datetime] = None
     ref_total_float: Optional[float] = None
+    ref_free_float: Optional[float] = None
 
     @property
     def is_milestone(self) -> bool:

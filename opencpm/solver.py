@@ -440,21 +440,6 @@ class Solver:
                     act.late_finish = lf
                 act.late_start = cal.subtract_hours(lf, dur)
 
-        # -- Float ------------------------------------------------------------
-        for act in sched.activities.values():
-            if act.early_start is None:
-                act.total_float_hours = None
-                continue
-            es, ls = act.early_start, act.late_start
-            assert es is not None and ls is not None
-            if ls <= es:
-                # Negative float is legitimate under constrained finish
-                # (research doc 02 §1.5: "late dates are early"; Draft 21
-                # stores -0.6 etc.). Calendar hours between LS and ES, negated.
-                act.total_float_hours = -self.cal_time_for(act).working_hours_between(ls, es)
-            else:
-                act.total_float_hours = self.cal_time_for(act).working_hours_between(es, ls)
-
         # -- ALAP constraints ---------------------------------------------------
         # CS_ALAP: "sets the activity's early dates as late as possible without
         # affecting successor activities" (Oracle docs). Only applies to
@@ -495,6 +480,66 @@ class Solver:
             if bound is not None and bound > act.early_start:
                 act.early_start = bound
                 act.early_finish = cal.add_hours(bound, dur)
+
+        # -- Float (after ALAP: ALAP mutates ES, so float must be computed
+        # on the FINAL early dates — the earlier position left stale TF on
+        # CS_ALAP rows like A3920) --------------------------------------------
+        for act in sched.activities.values():
+            if act.early_start is None:
+                act.total_float_hours = None
+                act.free_float_hours = None
+                continue
+            es, ls = act.early_start, act.late_start
+            assert es is not None and ls is not None
+            if ls <= es:
+                # Negative float is legitimate under constrained finish
+                # (research doc 02 §1.5: "late dates are early"; Draft 21
+                # stores -0.6 etc.). Calendar hours between LS and ES, negated.
+                act.total_float_hours = -self.cal_time_for(act).working_hours_between(ls, es)
+            else:
+                act.total_float_hours = self.cal_time_for(act).working_hours_between(es, ls)
+
+            # Free float: amount the activity can slip before delaying the
+            # start of any successor (PyP6Xer docstring; XER stores it in
+            # free_float_hr_cnt for every non-completed row). Calendar hours,
+            # clamped at 0.
+            cal = self.cal_time_for(act)
+            succs = sched.successors(act.task_id)
+            if not succs:
+                # Open end with use-project-end-for-float: the project finish
+                # acts as a pseudo-successor, so FF = TF (A1050: FF=TF=1640,
+                # A1090: FF=TF=1272 in Draft 21).
+                act.free_float_hours = max(act.total_float_hours or 0.0, 0.0)
+                continue
+            ff = None
+            for sid, rtype, lag in succs:
+                s = sched.activities.get(sid)
+                if s is None or s.early_start is None:
+                    continue
+                if rtype == RelType.FS:
+                    cand = cal.subtract_hours(s.early_start, lag, snap_zero=False)
+                    base = act.early_finish
+                elif rtype == RelType.SS:
+                    cand = cal.subtract_hours(s.early_start, lag, snap_zero=False)
+                    base = act.early_start
+                elif rtype == RelType.FF:
+                    assert s.early_finish is not None
+                    cand = cal.subtract_hours(s.early_finish, lag, snap_zero=False)
+                    base = act.early_finish
+                elif rtype == RelType.SF:
+                    assert s.early_finish is not None
+                    cand = cal.subtract_hours(s.early_finish, lag, snap_zero=False)
+                    base = act.early_start
+                else:
+                    continue
+                if cand is None or base is None:
+                    continue
+                if cand > base:
+                    wh = cal.working_hours_between(base, cand)
+                    ff = wh if ff is None else min(ff, wh)
+                else:
+                    ff = 0.0 if ff is None else min(ff, 0.0)
+            act.free_float_hours = 0.0 if ff is None else ff
 
         return sched
 
