@@ -81,7 +81,7 @@ Current parity (Aug 19 2026, after the backward-pass anchor fix):
 | 01-basic-fs-only | 100% | 100% | 100% | 100% | 100% |
 | 02-multi-calendar-lags | 98.5% | 98.5% | 98.5% | 86.4% | 98.5% |
 | 03-all-rel-types-10h-cal | 100% | 98.0% | 93.4% | 94.9% | 94.9% |
-| 04-scale-4217-alap | 54.1% | 54.1% | 99.5% | 96.5% | 54.2% |
+| 04-scale-4217-alap | 54.1% | 54.1% | 99.5% | 96.6% | 54.2% |
 
 LIS10 (real DLR files): Draft 19 ES 88.5% / LS 99.0% / LF 98.8%; Draft 21
 ES 88.4% / LS 96.7% / LF 97.4%.

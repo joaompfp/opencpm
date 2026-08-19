@@ -166,6 +166,7 @@ def load_xer(path: str) -> Schedule:
         proj = next((p for p in projects if getattr(p, "proj_id", None) == best_pid), projects[0])
 
     sched = Schedule(name=str(proj))
+    sel_pid = getattr(proj, "proj_id", None)
 
     for cal in reader.calendars:
         c = _build_calendar(cal)
@@ -173,6 +174,8 @@ def load_xer(path: str) -> Schedule:
 
     # Activities
     for t in reader.activities.activities:
+        if sel_pid is not None and getattr(t, "proj_id", None) != sel_pid:
+            continue  # other projects' rows (04: CR's 19 leak otherwise)
         act = Activity(
             task_id=str(t.task_id),
             task_code=t.task_code,
