@@ -255,6 +255,19 @@ class Solver:
         if start_date is None:
             raise ValueError("Schedule needs project_start or data_date")
 
+        # -- Boundary conditions ------------------------------------------------
+        # Completed activities are FIXED POINTS: their early dates are
+        # historical facts (actuals), not outputs of the calculation. Pin
+        # them before any pass; the forward pass starts from them and the
+        # backward pass reads them like any other predecessor date. (P6
+        # stores a data-date stamp in ES/EF for completed rows — that stamp
+        # does NOT reproduce chains; the actuals do. Verified regression:
+        # refs-anchoring drops Draft 19 ES 88.5% -> 64.4%.)
+        for act in sched.activities.values():
+            if act.status == Status.COMPLETE:
+                act.early_start = act.actual_start
+                act.early_finish = act.actual_end or act.actual_start
+
         # -- Forward pass -----------------------------------------------------
         order = self._topo_order()
         # Data date: explicit if set, else max actual end (schedule is progressed)
@@ -279,15 +292,7 @@ class Solver:
         for tid in order:
             act = sched.activities[tid]
             if act.status == Status.COMPLETE:
-                # Completed activities anchor successors at their ACTUAL
-                # dates (P6 recomputes from actuals when progressing; the
-                # stored ES/EF in the XER for completed rows is a stamped
-                # data-date artifact that does not reproduce the chains —
-                # verified regression: refs-anchoring drops Draft 19 ES
-                # 88.5% -> 64.4%).
-                act.early_start = act.actual_start
-                act.early_finish = act.actual_end or act.actual_start
-                continue
+                continue  # boundary-pinned above; never recomputed
             if act.is_milestone or act.effective_duration == 0:
                 dur = 0.0
             else:
@@ -447,6 +452,8 @@ class Solver:
         for act in sched.activities.values():
             if act.constraint_type != "CS_ALAP":
                 continue
+            if act.status == Status.COMPLETE:
+                continue  # fixed point — never re-scheduled
             if act.early_start is None or act.early_finish is None:
                 continue
             if act.total_float_hours is not None and act.total_float_hours <= 0:
@@ -486,6 +493,12 @@ class Solver:
         # on the FINAL early dates — the earlier position left stale TF on
         # CS_ALAP rows like A3920) --------------------------------------------
         for act in sched.activities.values():
+            if act.status == Status.COMPLETE:
+                # Completed = fixed point: no float (P6 exports TF/FF blank
+                # for completed rows — they are not part of the calculation).
+                act.total_float_hours = None
+                act.free_float_hours = None
+                continue
             if act.early_start is None:
                 act.total_float_hours = None
                 act.free_float_hours = None
