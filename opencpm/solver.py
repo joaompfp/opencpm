@@ -143,36 +143,6 @@ class CalendarTime:
             day -= timedelta(days=1)
         return day  # unreachable
 
-    def snap_to_window_end(self, dt: datetime) -> datetime:
-        """Latest window END <= dt (dt itself when dt is a window end).
-
-        P6 stores relationship-derived late finishes exactly at calendar
-        window ends (413/422 rows at minute :00 in Draft 21; LF hours 16:00
-        for 8h calendars). Constraint timestamps (08:36) do NOT propagate
-        into positive-duration late dates.
-        """
-        day = dt.replace(hour=0, minute=0, second=0, microsecond=0)
-        while True:
-            if self.cal.is_workday(day):
-                for w in sorted(self.cal.windows_for(day),
-                                key=lambda x: (x.end.hour, x.end.minute), reverse=True):
-                    we = day.replace(hour=w.end.hour, minute=w.end.minute)
-                    if we <= dt:
-                        return we
-            day -= timedelta(days=1)
-
-    def snap_to_window_start(self, dt: datetime) -> datetime:
-        """Latest window START <= dt (dt itself when dt is a window start)."""
-        day = dt.replace(hour=0, minute=0, second=0, microsecond=0)
-        while True:
-            if self.cal.is_workday(day):
-                for w in sorted(self.cal.windows_for(day),
-                                key=lambda x: (x.start.hour, x.start.minute), reverse=True):
-                    ws = day.replace(hour=w.start.hour, minute=w.start.minute)
-                    if ws <= dt:
-                        return ws
-            day -= timedelta(days=1)
-
     def working_hours_between(self, start: datetime, end: datetime) -> float:
         """Total working hours from start to end."""
         if end <= start:
@@ -295,6 +265,17 @@ class Solver:
             )
             sched.data_date = dd
 
+        # Forward-pass floor: P6 never schedules an activity before the later
+        # of the data date and the project start date. samples/04 has data
+        # date 2012-05-10 but plan_start 2012-06-04 — P6's stored ES starts
+        # 06-05+; flooring only at the data date ran every chain 24-30 days
+        # early. LIS/01-03 have plan_start <= data date, so the floor is the
+        # data date there (unchanged behaviour).
+        floor = sched.data_date or sched.project_start
+        if (sched.data_date is not None and sched.project_start is not None
+                and sched.project_start > sched.data_date):
+            floor = sched.project_start
+
         for tid in order:
             act = sched.activities[tid]
             if act.status == Status.COMPLETE:
@@ -314,7 +295,7 @@ class Solver:
             cal = self.cal_time_for(act)
 
             if not act.predecessors:
-                es = sched.data_date if sched.data_date else start_date
+                es = floor
             else:
                 es = None
                 for pid, rtype, lag in act.predecessors:
@@ -327,7 +308,7 @@ class Solver:
                     if es is None or cand > es:
                         es = cand
                 if es is None:
-                    es = sched.data_date if sched.data_date else start_date
+                    es = floor
             # Active activity: P6 ES is driven by data date + logic, not the
             # historical actual start. The data-date floor below covers it.
             # Hard constraints (v1: MEO/MSOA, the ones that move early dates)
@@ -342,9 +323,10 @@ class Solver:
                 # Must start on or after
                 es = max(es, act.constraint_date)
             # CS_ALAP handled after backward pass (ES := LS)
-            # P6 floor: no remaining work starts before the data date.
-            if sched.data_date is not None and es < sched.data_date:
-                es = sched.data_date
+            # P6 floor: no remaining work starts before the data date /
+            # project start (see floor computation above).
+            if floor is not None and es < floor:
+                es = floor
             # Snap ES into a valid working start. P6 snaps:
             # - positive-duration activities (always)
             # - zero-duration TASKS (TT_Task) — they behave like work
@@ -357,10 +339,17 @@ class Solver:
 
         # Project end = max EF, unless P6's own finish was imported (that
         # anchors the backward pass identically to how P6 calculated it)
-        end = sched.project_end or max(
+        end = sched.project_float_end or sched.project_end or max(
             (a.early_finish for a in sched.activities.values() if a.early_finish),
             default=start_date,
         )
+        # An imposed finish is typed as a plain date (00:00), but float is
+        # measured from the last WORKING instant at or before it — P6 reports
+        # late finishes at the end of the preceding workday, never at midnight
+        # (samples/02: plan_end 2013-03-01 00:00 -> anchor 2013-02-28 17:00).
+        if sched.project_float_end is not None and sched.activities:
+            _ref = next(iter(sched.activities.values()))
+            end = self.cal_time_for(_ref).prev_working_instant(end)
 
         # -- Project finish constraint -----------------------------------------
         # P6 with "use project finish date for float" (SCHEDOPTIONS
@@ -394,10 +383,8 @@ class Solver:
             succs = sched.successors(tid)
             if not succs:
                 lf = end
-                lf_driver = None
             else:
                 lf = None
-                lf_driver = None
                 for succ_id, rtype, lag in succs:
                     s = sched.activities[succ_id]
                     if s.early_start is None:
@@ -405,10 +392,8 @@ class Solver:
                     cand = self._constraint_late_finish(act, s, rtype, lag)
                     if lf is None or cand < lf:
                         lf = cand
-                        lf_driver = rtype
                 if lf is None:
                     lf = end
-                    lf_driver = None
             # Hard constraints that affect LATE dates, applied INLINE so
             # predecessors see the pinned value (Oracle constraint docs):
             # - CS_MEO (Finish On): late finish = constraint date exactly
@@ -430,14 +415,6 @@ class Solver:
                 # timestamps (08:36) are KEPT for zero-duration rows.
                 act.late_start = lf
             else:
-                # Positive duration: P6 snaps FS/SS-driven late dates to
-                # calendar window edges (Draft 21: 413/422 rows at minute :00,
-                # LF at 16:00, LS at 08:00). FF/SF-driven late dates keep the
-                # raw constraint timestamp (A3920: subtract_hours(07-14 08:36,
-                # 320h) = 05-19 08:36 = P6 exactly).
-                if lf_driver in (RelType.FS, RelType.SS) and cstr != "CS_MEO":
-                    lf = cal.snap_to_window_end(lf)
-                    act.late_finish = lf
                 act.late_start = cal.subtract_hours(lf, dur)
 
         # -- ALAP constraints ---------------------------------------------------

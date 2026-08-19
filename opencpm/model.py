@@ -137,6 +137,7 @@ class Schedule:
     calendars: Dict[str, Calendar] = field(default_factory=dict)
     project_start: Optional[datetime] = None
     project_end: Optional[datetime] = None  # set by solver
+    project_float_end: Optional[datetime] = None  # imposed finish used as the float anchor
     data_date: Optional[datetime] = None
 
     def successors(self, task_id: str) -> List[tuple]:

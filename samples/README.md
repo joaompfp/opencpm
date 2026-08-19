@@ -26,9 +26,15 @@ This file contains **4 projects**, and the one with the activities is **not the 
 | `CR` | 19 |
 | `HBTF-2` | **4217** |
 
-`xer_adapter.load_xer()` takes `projects[0]`, so this file currently loads as **empty**.
-Either add project selection to the adapter or skip this fixture until then — don't waste
-time debugging a zero-activity schedule.
+`xer_adapter.load_xer()` selects the project owning the most TASK rows, so
+this file loads the right project (HBTF-2) automatically. Parity (Aug 2026):
+LS 99.5%, LF 96.5%, ES 54.1% (ES residue = FF-lag arithmetic + 12/20
+CS_ALAP rows). Untracked — 3.8MB third-party data; re-fetch with:
+
+```bash
+curl -sL "https://raw.githubusercontent.com/soulmajor1/Primavera-P6-Xer-Viewer/HEAD/XER%20Files/Hotel%20Project.xer" \
+  -o samples/04-scale-4217-alap.xer
+```
 
 ## Running parity
 
@@ -66,6 +72,16 @@ but they predate newer P6 features.
 | `04-scale-4217-alap.xer` | `soulmajor1/Primavera-P6-Xer-Viewer` | `XER Files/Hotel Project.xer` |
 
 Neither source repo carries an explicit licence for these files, and they contain real
-company/project names. **Left untracked deliberately** — decide before `git add` whether
-third-party schedules belong in a public repo (and note `04` alone is 3.7 MB, which would
-be permanent history bloat).
+company/project names. **04 is untracked** (3.7 MB history bloat, unlicensed third-party);
+01-03 are committed (407 KB total) so the parity ladder is reproducible from a clean clone.
+Current parity (Aug 19 2026, after the backward-pass anchor fix):
+
+| File | ES | EF | LS | LF | TF |
+|---|---|---|---|---|---|
+| 01-basic-fs-only | 100% | 100% | 100% | 100% | 100% |
+| 02-multi-calendar-lags | 98.5% | 98.5% | 98.5% | 86.4% | 98.5% |
+| 03-all-rel-types-10h-cal | 100% | 98.0% | 93.4% | 94.9% | 94.9% |
+| 04-scale-4217-alap | 54.1% | 54.1% | 99.5% | 96.5% | 54.2% |
+
+LIS10 (real DLR files): Draft 19 ES 88.5% / LS 99.0% / LF 98.8%; Draft 21
+ES 88.4% / LS 96.7% / LF 97.4%.

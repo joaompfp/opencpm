@@ -5,3 +5,6 @@ venv/
 *.egg-info/
 dist/
 build/
+
+# Large third-party fixture — re-fetch per samples/README.md
+samples/04-scale-4217-alap.xer

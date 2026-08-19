@@ -57,6 +57,16 @@ def _to_dt(v) -> Optional[datetime]:
             return None
 
 
+def _hour_to_time(h: float) -> time:
+    """Fractional hour (e.g. 17.5) -> time(17, 30), clamped to a valid clock."""
+    h = min(h, 23.999)
+    hh = int(h)
+    mm = int(round((h - hh) * 60))
+    if mm == 60:
+        hh, mm = hh + 1, 0
+    return time(min(hh, 23), mm)
+
+
 def _build_calendar(cal_obj) -> Calendar:
     exceptions: dict = {}
     # P6 stores per-day overrides in clndr_data: (0||N(d|serial)(windows))
@@ -77,21 +87,16 @@ def _build_calendar(cal_obj) -> Calendar:
         exceptions[_dt.date()] = wins or None
 
     windows: dict = {}
-    wh = getattr(cal_obj, "working_hours", None)
-    if wh is None:
-        # Resource calendars (CA_Rsrc) have working_days but no
-        # working_hours attribute. They don't drive activity dates —
-        # skip building windows for them.
-        return Calendar(
-            cal_id=str(cal_obj.clndr_id),
-            name=getattr(cal_obj, "clndr_name", "") or "",
-            day_hours=float(getattr(cal_obj, "day_hr_cnt", None) or 8.0),
-            work_windows=windows,
-            exceptions=exceptions,
-            base_cal_id=str(cal_obj.base_clndr_id) if getattr(cal_obj, "base_clndr_id", None) else None,
-            project_override=(getattr(cal_obj, "clndr_type", "") == "CA_Project"),
-        )
-    for entry in (wh or []):
+    # PyP6XER's `working_hours` parses clndr_data and raises AttributeError
+    # outright when that field is empty — which real files do contain:
+    # resource calendars (CA_Rsrc) are commonly exported with no calendar
+    # data at all. Treat it as "no weekly pattern available" rather than
+    # letting it kill the whole import.
+    try:
+        entries = cal_obj.working_hours or []
+    except AttributeError:
+        entries = []
+    for entry in entries:
         dow_name = entry.get("DayOfWeek")
         iso = _iso_weekday(dow_name)
         wt = []
@@ -102,6 +107,30 @@ def _build_calendar(cal_obj) -> Calendar:
                 continue
             wt.append(WorkWindow(st, fn))
         windows[iso] = wt
+
+    if not any(windows.values()):
+        # Synthesize a week from the calendar's own hour counts rather than
+        # assuming 5x8: week_hr_cnt / day_hr_cnt gives the workdays P6 itself
+        # recorded for this calendar (e.g. 60/10 -> a 6-day, 10h week),
+        # filled Monday-first.
+        day_h = float(getattr(cal_obj, "day_hr_cnt", None) or 8.0)
+        week_h = float(getattr(cal_obj, "week_hr_cnt", None) or (day_h * 5))
+        n_days = max(1, min(7, round(week_h / day_h))) if day_h else 5
+        start_h = 8
+        for iso in range(1, 8):
+            if iso <= n_days:
+                end_h = start_h + day_h
+                # Split across a lunch break only when the day is long
+                # enough to need one; keeps short (<=4h) days contiguous.
+                if day_h > 4:
+                    windows[iso] = [
+                        WorkWindow(time(start_h, 0), time(12, 0)),
+                        WorkWindow(time(13, 0), _hour_to_time(13 + (day_h - 4))),
+                    ]
+                else:
+                    windows[iso] = [WorkWindow(time(start_h, 0), _hour_to_time(end_h))]
+            else:
+                windows[iso] = []
     return Calendar(
         cal_id=str(cal_obj.clndr_id),
         name=cal_obj.clndr_name,
@@ -114,11 +143,27 @@ def _build_calendar(cal_obj) -> Calendar:
 
 
 def load_xer(path: str) -> Schedule:
-    """Parse an XER file into an openCPM Schedule. Returns the first project."""
+    """Parse an XER file into an openCPM Schedule.
+
+    Multi-project files select the project owning the most activities
+    (samples/04 has 4 projects; the 4217-activity one is not first).
+    """
     from xerparser.reader import Reader
+    from collections import Counter
 
     reader = Reader(path)
-    proj = next(iter(reader.projects))
+    projects = list(reader.projects)
+
+    # Pick the project that owns the most TASK rows; fall back to first.
+    proj_counts = Counter()
+    for t in reader.activities.activities:
+        pid = getattr(t, "proj_id", None)
+        if pid is not None:
+            proj_counts[pid] += 1
+    proj = projects[0]
+    if proj_counts:
+        best_pid = proj_counts.most_common(1)[0][0]
+        proj = next((p for p in projects if getattr(p, "proj_id", None) == best_pid), projects[0])
 
     sched = Schedule(name=str(proj))
 
@@ -163,6 +208,19 @@ def load_xer(path: str) -> Schedule:
     # Data date: P6 stamps last_recalc_date in the PROJECT row. In XER exports
     # completed activities carry ES=EE=data date, so this is the true anchor.
     sched.data_date = _to_dt(proj.next_data_date) or _to_dt(proj.apply_actuals_date) or _to_dt(proj.last_recalc_date)
-    # P6's own computed finish (scd_end_date) — anchors the backward pass.
+    # P6's own computed finish (scd_end_date) — pins the terminal in the
+    # forward pass when the network would otherwise end earlier.
     sched.project_end = _to_dt(proj.scd_end_date)
+    # Backward-pass anchor, kept SEPARATE from project_end because the two
+    # answer different questions: project_end is P6's own computed finish,
+    # while float is measured against the project's imposed "must finish by"
+    # date when the planner set one. With SCHEDOPTIONS
+    # sched_use_project_end_date_for_float=Y (P6's default) that imposed
+    # date is plan_end_date; it's empty in most files, which is why
+    # scd_end_date works as a fallback. Conflating them costs a uniform
+    # one-workday shift on every late date: samples/02 has
+    # plan_end_date=2013-03-01 00:00 (P6 anchors late dates at the last
+    # working instant before it, 2013-02-28 17:00) while
+    # scd_end_date=2013-02-27 17:00.
+    sched.project_float_end = _to_dt(proj.plan_end_date) or _to_dt(proj.scd_end_date)
     return sched
