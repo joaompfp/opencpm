@@ -99,12 +99,16 @@ class CalendarTime:
             day += timedelta(days=1)
         return day  # unreachable
 
-    def subtract_hours(self, dt: datetime, hours: float) -> datetime:
+    def subtract_hours(self, dt: datetime, hours: float, snap_zero: bool = True) -> datetime:
         """Move dt backward by `hours` of calendar working time.
 
         Snaps backward: if dt is at/before a window start, the previous
         working instant is the previous window end (P6 FS-0 predecessor
         finishing at 08:00 really finished previous day 17:00).
+
+        snap_zero=False: hours==0 returns dt unchanged (identity). Used for
+        SS/SF backward links where the start instant is shared, not snapped
+        (verified: A35251 LS = A35261 LS = 08-12 08:00 in Draft 21).
         """
         if hours < 0:
             return self.add_hours(dt, -hours)
@@ -115,7 +119,7 @@ class CalendarTime:
         anchor = self.prev_working_instant(current)
 
         if remaining <= 0:
-            return anchor
+            return dt if not snap_zero else anchor
 
         day = anchor.replace(hour=0, minute=0, second=0, microsecond=0)
         while remaining > 0:
@@ -138,6 +142,36 @@ class CalendarTime:
                     remaining -= available
             day -= timedelta(days=1)
         return day  # unreachable
+
+    def snap_to_window_end(self, dt: datetime) -> datetime:
+        """Latest window END <= dt (dt itself when dt is a window end).
+
+        P6 stores relationship-derived late finishes exactly at calendar
+        window ends (413/422 rows at minute :00 in Draft 21; LF hours 16:00
+        for 8h calendars). Constraint timestamps (08:36) do NOT propagate
+        into positive-duration late dates.
+        """
+        day = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        while True:
+            if self.cal.is_workday(day):
+                for w in sorted(self.cal.windows_for(day),
+                                key=lambda x: (x.end.hour, x.end.minute), reverse=True):
+                    we = day.replace(hour=w.end.hour, minute=w.end.minute)
+                    if we <= dt:
+                        return we
+            day -= timedelta(days=1)
+
+    def snap_to_window_start(self, dt: datetime) -> datetime:
+        """Latest window START <= dt (dt itself when dt is a window start)."""
+        day = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        while True:
+            if self.cal.is_workday(day):
+                for w in sorted(self.cal.windows_for(day),
+                                key=lambda x: (x.start.hour, x.start.minute), reverse=True):
+                    ws = day.replace(hour=w.start.hour, minute=w.start.minute)
+                    if ws <= dt:
+                        return ws
+            day -= timedelta(days=1)
 
     def working_hours_between(self, start: datetime, end: datetime) -> float:
         """Total working hours from start to end."""
@@ -206,14 +240,18 @@ class Solver:
             return cal.subtract_hours(succ.late_start, lag_hours)
         if rtype == RelType.SS:
             assert succ.late_start is not None
-            act_ls = cal.subtract_hours(succ.late_start, lag_hours)
+            # SS backward: LS_pred = LS_succ - lag. With lag=0 the start
+            # instant is IDENTICAL (no snap-back to previous window end) —
+            # SS means the two activities share the same start instant
+            # (verified: A35251 LS = A35261 LS = 08-12 08:00 in Draft 21).
+            act_ls = cal.subtract_hours(succ.late_start, lag_hours, snap_zero=False)
             return cal.add_hours(act_ls, act.effective_duration)
         if rtype == RelType.FF:
             assert succ.late_finish is not None
             return cal.subtract_hours(succ.late_finish, lag_hours)
         if rtype == RelType.SF:
             assert succ.late_finish is not None
-            act_ls = cal.subtract_hours(succ.late_finish, lag_hours)
+            act_ls = cal.subtract_hours(succ.late_finish, lag_hours, snap_zero=False)
             return cal.add_hours(act_ls, act.effective_duration)
         raise ValueError(f"Unknown relationship type {rtype}")
 
@@ -263,7 +301,9 @@ class Solver:
                 # Completed activities anchor successors at their ACTUAL
                 # dates (P6 recomputes from actuals when progressing; the
                 # stored ES/EF in the XER for completed rows is a stamped
-                # data-date artifact that does not reproduce the chains).
+                # data-date artifact that does not reproduce the chains —
+                # verified regression: refs-anchoring drops Draft 19 ES
+                # 88.5% -> 64.4%).
                 act.early_start = act.actual_start
                 act.early_finish = act.actual_end or act.actual_start
                 continue
@@ -382,9 +422,18 @@ class Solver:
             dur = 0.0 if act.is_milestone else act.effective_duration
             if dur <= 0:
                 # Zero-duration: LS == LF exactly (P6: milestone late dates
-                # are identical, no snap-back to previous window).
+                # are identical, no snap-back to previous window). Constraint
+                # timestamps (08:36) are KEPT for zero-duration rows.
                 act.late_start = lf
             else:
+                # Positive duration: P6 snaps relationship-derived late dates
+                # to calendar window edges (413/422 rows at minute :00 in
+                # Draft 21; LF at 16:00, LS at 08:00). Constraint timestamps
+                # do NOT propagate into positive-duration late dates, except
+                # when a hard constraint (CS_MEO) pins LF exactly.
+                if cstr != "CS_MEO":
+                    lf = cal.snap_to_window_end(lf)
+                    act.late_finish = lf
                 act.late_start = cal.subtract_hours(lf, dur)
 
         # -- Float ------------------------------------------------------------
@@ -395,7 +444,10 @@ class Solver:
             es, ls = act.early_start, act.late_start
             assert es is not None and ls is not None
             if ls <= es:
-                act.total_float_hours = 0.0
+                # Negative float is legitimate under constrained finish
+                # (research doc 02 §1.5: "late dates are early"; Draft 21
+                # stores -0.6 etc.). Calendar hours between LS and ES, negated.
+                act.total_float_hours = -self.cal_time_for(act).working_hours_between(ls, es)
             else:
                 act.total_float_hours = self.cal_time_for(act).working_hours_between(es, ls)
 
