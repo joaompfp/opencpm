@@ -344,58 +344,6 @@ class Solver:
             dur = 0.0 if act.is_milestone else act.effective_duration
             act.late_start = cal.subtract_hours(lf, dur)
 
-        # -- ALAP constraints ---------------------------------------------------
-        # CS_ALAP: activity starts at its latest start (LS). P6 semantics:
-        # schedule as late as possible. Pin ES/EF at LS/LF, then RE-RUN the
-        # forward pass so successors cascade from the pinned dates (P6 does
-        # exactly this — ALAP activities drag everything downstream with them).
-        alap_ids = {
-            tid for tid, a in sched.activities.items()
-            if a.constraint_type == "CS_ALAP" and a.late_start is not None
-        }
-        for tid in alap_ids:
-            a = sched.activities[tid]
-            a.early_start = a.late_start
-            a.early_finish = a.late_finish
-
-        for tid in order:
-            if tid in alap_ids:
-                continue
-            act = sched.activities[tid]
-            if act.status == Status.COMPLETE:
-                continue
-            dur = 0.0 if act.is_milestone else act.effective_duration
-            cal = self.cal_time_for(act)
-            if not act.predecessors:
-                es = sched.data_date if sched.data_date else start_date
-            else:
-                es = None
-                for pid, rtype, lag in act.predecessors:
-                    if pid not in sched.activities:
-                        continue
-                    p = sched.activities[pid]
-                    if p.early_start is None:
-                        continue
-                    cand = self._constraint_early_start(act, p, rtype, lag)
-                    if es is None or cand > es:
-                        es = cand
-                if es is None:
-                    es = sched.data_date if sched.data_date else start_date
-            cstr = act.constraint_type
-            if cstr == "CS_MEO" and act.constraint_date is not None:
-                if dur <= 0:
-                    es = max(es, act.constraint_date)
-                else:
-                    es = max(es, cal.subtract_hours(act.constraint_date, dur))
-            elif cstr == "CS_MSOA" and act.constraint_date is not None:
-                es = max(es, act.constraint_date)
-            if sched.data_date is not None and es < sched.data_date:
-                es = sched.data_date
-            if dur > 0:
-                es = cal.next_working_instant(es)
-            act.early_start = es
-            act.early_finish = cal.add_hours(es, dur)
-
         # -- Float ------------------------------------------------------------
         for act in sched.activities.values():
             if act.early_start is None:
