@@ -330,10 +330,25 @@ class Solver:
             # Snap ES into a valid working start. P6 snaps:
             # - positive-duration activities (always)
             # - zero-duration TASKS (TT_Task) — they behave like work
-            # but NOT milestones (TT_Mile/TT_FinMile) which may sit exactly
-            # on a window end (CS_MEO and FF-linked milestones).
+            # - MILESTONES (TT_Mile) sitting exactly AT a window END: they
+            #   snap to the next working start (A1350/A2140/A2160/A6940:
+            #   pred EF 16:00 -> ES next day 08:00) — but a milestone at a
+            #   pre-window instant (03: start milestone at 00:00) KEEPS it
+            # but NOT FINISH_MILESTONES (TT_FinMile) which may sit exactly
+            # on a window end (A7680/A35301/A35411 keep 16:00) and NOT
+            # mid-window instants (Milestone 16 at 08:36 stays).
             if dur > 0 or act.task_type == TaskType.TASK:
                 es = cal.next_working_instant(es)
+            elif act.task_type == TaskType.MILESTONE:
+                day = es.replace(hour=0, minute=0, second=0, microsecond=0)
+                at_window_end = False
+                if cal.cal.is_workday(day):
+                    for w in cal.cal.windows_for(day):
+                        if es == day.replace(hour=w.end.hour, minute=w.end.minute):
+                            at_window_end = True
+                            break
+                if at_window_end:
+                    es = cal.next_working_instant(es)
             act.early_start = es
             act.early_finish = cal.add_hours(es, dur)
 
@@ -401,7 +416,12 @@ class Solver:
             # - CS_MSO (Start On): late start = constraint date -> LF = date + dur
             cstr = act.constraint_type
             if cstr == "CS_MEO" and act.constraint_date is not None:
-                lf = act.constraint_date
+                # Must Finish On: late finish = constraint date exactly, but
+                # never LATER than the project-end anchor — a MEO before the
+                # anchor wins (Milestone 18 at 07-14 vs anchor 10-11); a MEO
+                # after the anchor is capped by it (the anchor is the latest
+                # any late date may sit in a consistent run).
+                lf = min(end, act.constraint_date)
             elif cstr == "CS_FOB" and act.constraint_date is not None:
                 lf = min(lf, act.constraint_date)
             elif cstr == "CS_MSO" and act.constraint_date is not None:
@@ -455,8 +475,12 @@ class Solver:
                 if bound is None or cand < bound:
                     bound = cand
             if bound is not None and bound > act.early_start:
-                act.early_start = bound
-                act.early_finish = cal.add_hours(bound, dur)
+                # The ALAP bound is a raw instant (e.g. a window end 16:00);
+                # P6 snaps it to the next working start for positive-duration
+                # activities (A35561: bound 10-16 16:00 -> ES 10-19 08:00).
+                snap_bound = cal.next_working_instant(bound) if dur > 0 else bound
+                act.early_start = snap_bound
+                act.early_finish = cal.add_hours(snap_bound, dur)
 
         # -- Float (after ALAP: ALAP mutates ES, so float must be computed
         # on the FINAL early dates — the earlier position left stale TF on
