@@ -4,7 +4,7 @@
 **Date:** 2026-08-19
 **Evidence base:** LIS10-Draft 19 (exported 2026-08-12, 483 tasks) and LIS10-Draft 21 (exported 2026-08-14, 487 tasks), both P6 15.2 EPPM exports; plus LIS10-Draft 14, "LIS1 - Data Center Full program" (Draft 12), "260525_Scenario A" (Draft 8), sample XERs and PyP6XER/xerparser parser sources. All date values below were read directly from the raw `%R` rows of the XER files (TSV, `latin-1`), column positions per the `%F` header.
 
-> **File-location note:** this document lives at `opencpm/docs/reference/03-xer-date-storage.md` (the repo root is `/home/joao/projects/opencpm`). The XER evidence files used are under `/home/joao/.playwright-mcp/uploads/` and `/home/joao/projects/LIS1/planning/`.
+> **File-location note:** this document lives at `opencpm/docs/reference/03-xer-date-storage.md` (the repo root is `/home/joao/projects/opencpm`). The XER evidence files used are under `/home/joao/.playwright-mcp/uploads/` and `/home/joao/projects/LIS10/planning/`.
 
 **Bottom line:** a P6 XER stores the last *calculated* schedule results as plain columns on each `TASK` row — it is a snapshot of the database at export time, not a recomputation. Export does **not** recalculate. Therefore (a) early/late dates and float can be a mix of stamps from *different* schedule runs, (b) completed activities carry early dates that are a data-date stamp rather than their actuals, and (c) late dates can legitimately sit *before* early dates (negative float) when the project finish is constrained. Free float **is** stored (`free_float_hr_cnt`). Milestones export `LS == LF` exactly. All of these are observed in the LIS10 files and corroborated by Oracle P6 help and community sources below.
 
@@ -184,7 +184,7 @@ Semantics (PyP6Xer docstring): "The amount of time the activity can be delayed b
 **Primary evidence (raw XER rows read for this document):**
 - `/home/joao/.playwright-mcp/uploads/LIS10-Draft 19.xer` (exported 2026-08-12, P6 15.2 EPPM, 483 tasks)
 - `/home/joao/.playwright-mcp/uploads/LIS10-Draft 21.xer` (exported 2026-08-14, 487 tasks)
-- `/home/joao/projects/LIS1/planning/LIS1 - Data Center Full program.xer` (Draft 12), `/home/joao/vaults/pessoal/LIS10-Draft_14.xer`, `/home/joao/projects/CoW/DLR-LIS10-2.4MW-Refit/PMO/Programme/260525_Scenario A - Early Delivery Room DH117 Level 01 - Print Primavera P6.xer`, `/home/joao/.playwright-mcp/sample-schedule.xer` and `sample-baseline.xer`
+- `/home/joao/projects/LIS10/planning/LIS1 - Data Center Full program.xer` (Draft 12), `/home/joao/vaults/pessoal/LIS10-Draft_14.xer`, `/home/joao/projects/CoW/LIS10/PMO/Programme/260525_Scenario A - Early Delivery Room DH117 Level 01 - Print Primavera P6.xer`, `/home/joao/.playwright-mcp/sample-schedule.xer` and `sample-baseline.xer`
 
 **Parser sources (cloned 2026-08-19):**
 - jjCode01/xerparser — https://github.com/jjCode01/xerparser (`xerparser/schemas/task.py`, `project.py`, `schedoptions.py`, `src/validators.py`)

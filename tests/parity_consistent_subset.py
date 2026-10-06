@@ -11,7 +11,7 @@ from xer_adapter import load_xer
 
 
 def main():
-    sched = load_xer("/XD/JLL/LIS1/Planning/LIS10-Draft 21.xer")
+    sched = load_xer("/XD/JLL/LIS10/Planning/LIS10-Draft 21.xer")
     solver = Solver(sched)
     solver.solve()
 

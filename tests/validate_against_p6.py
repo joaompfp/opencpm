@@ -98,4 +98,4 @@ def compare(path):
 
 
 if __name__ == "__main__":
-    compare(sys.argv[1] if len(sys.argv) > 1 else "/XD/JLL/LIS1/Planning/LIS10-Draft 21.xer")
+    compare(sys.argv[1] if len(sys.argv) > 1 else "/XD/JLL/LIS10/Planning/LIS10-Draft 21.xer")

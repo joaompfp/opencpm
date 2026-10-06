@@ -14,7 +14,7 @@ def fmt(dt):
 
 
 def main():
-    sched = load_xer("/XD/JLL/LIS1/Planning/LIS10-Draft 21.xer")
+    sched = load_xer("/XD/JLL/LIS10/Planning/LIS10-Draft 21.xer")
     solver = Solver(sched)
     solver.solve()
     by_id = {a.task_id: a for a in sched.activities.values()}

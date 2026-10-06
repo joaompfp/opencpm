@@ -12,7 +12,7 @@ sys.path.insert(0, "/home/joao/projects/opencpm/xer_adapter")
 from opencpm.solver import Solver
 from xer_adapter import load_xer
 
-path = "/XD/JLL/LIS1/Planning/LIS10-Draft 21.xer"
+path = "/XD/JLL/LIS10/Planning/LIS10-Draft 21.xer"
 sched = load_xer(path)
 Solver(sched).solve()
 

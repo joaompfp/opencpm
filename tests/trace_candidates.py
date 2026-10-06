@@ -10,7 +10,7 @@ from xer_adapter import load_xer
 def fmt(dt):
     return dt.strftime("%Y-%m-%d %H:%M") if dt else "None"
 
-path = "/XD/JLL/LIS1/Planning/LIS10-Draft 21.xer"
+path = "/XD/JLL/LIS10/Planning/LIS10-Draft 21.xer"
 sched = load_xer(path)
 solver = Solver(sched)
 solver.solve()

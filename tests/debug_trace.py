@@ -78,4 +78,4 @@ def main(path):
 
 
 if __name__ == "__main__":
-    main("/XD/JLL/LIS1/Planning/LIS10-Draft 21.xer")
+    main("/XD/JLL/LIS10/Planning/LIS10-Draft 21.xer")
